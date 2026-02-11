@@ -1,3 +1,5 @@
+// Touqeer Ahmed
+
 package com.reactnativecompressor.Image
 
 import android.graphics.Bitmap
