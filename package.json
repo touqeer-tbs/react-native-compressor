@@ -31,7 +31,7 @@
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
-    "prepack": "bob build",
+   "prepack": "echo skip prepack",
     "release": "release-it",
     "example": "yarn --cwd example",
     "build:android": "cd example/android && ./gradlew assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a",
