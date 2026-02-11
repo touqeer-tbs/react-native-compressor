@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
+import android.util.Log
 import com.facebook.react.bridge.ReactApplicationContext
 import com.reactnativecompressor.Utils.MediaCache
 import com.reactnativecompressor.Utils.Utils.exifAttributes
@@ -21,6 +22,7 @@ import java.io.IOException
 import java.net.MalformedURLException
 
 object ImageCompressor {
+
     fun getRNFileUrl(filePath: String?): String? {
         var filePath = filePath
         val returnAbleFile = File(filePath)
@@ -50,34 +52,46 @@ object ImageCompressor {
         return BitmapFactory.decodeByteArray(data, 0, data.size)
     }
 
+    /**
+     * Load bitmap and fix EXIF rotation immediately.
+     */
     fun loadImage(value: String?): Bitmap {
         val uri = Uri.parse(value)
-        val filePath = uri.path
-        return BitmapFactory.decodeFile(filePath)
+        val filePath = uri.path ?: return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        var bitmap = BitmapFactory.decodeFile(filePath)
+        bitmap = correctImageOrientation(bitmap, filePath)
+        return bitmap
     }
 
-    fun copyExifInfo(imagePath:String, outputUri:String){
-      try {
-        // for copy exif info
-        val sourceExif = ExifInterface(imagePath)
-        val compressedExif = ExifInterface(outputUri)
-        for (tag in exifAttributes) {
-          val compressedValue = compressedExif.getAttribute(tag)
-          if(compressedValue==null)
-          {
-            val sourceValue = sourceExif.getAttribute(tag)
-            if (sourceValue != null) {
-              compressedExif.setAttribute(tag, sourceValue)
+    /**
+     * Copy EXIF metadata (including orientation) from original to compressed output
+     */
+    fun copyExifInfo(imagePath: String, outputUri: String) {
+        try {
+            val sourceExif = ExifInterface(imagePath)
+            val compressedExif = ExifInterface(outputUri)
+            for (tag in exifAttributes) {
+                val compressedValue = compressedExif.getAttribute(tag)
+                if (compressedValue == null) {
+                    val sourceValue = sourceExif.getAttribute(tag)
+                    if (sourceValue != null) {
+                        compressedExif.setAttribute(tag, sourceValue)
+                    }
+                }
             }
-          }
+            compressedExif.saveAttributes()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        compressedExif.saveAttributes()
-      } catch (e: Exception) {
-        e.printStackTrace()
-      }
     }
 
-    fun encodeImage(imageDataByteArrayOutputStream: ByteArrayOutputStream, isBase64: Boolean, outputExtension: String?,imagePath: String?, reactContext: ReactApplicationContext?): String? {
+    fun encodeImage(
+        imageDataByteArrayOutputStream: ByteArrayOutputStream,
+        isBase64: Boolean,
+        outputExtension: String?,
+        imagePath: String?,
+        reactContext: ReactApplicationContext?
+    ): String? {
         if (isBase64) {
             val imageData = imageDataByteArrayOutputStream.toByteArray()
             return Base64.encodeToString(imageData, Base64.DEFAULT)
@@ -87,7 +101,8 @@ object ImageCompressor {
                 val fos = FileOutputStream(outputUri)
                 imageDataByteArrayOutputStream.writeTo(fos)
 
-              copyExifInfo(imagePath!!, outputUri)
+                // Copy EXIF metadata from source
+                copyExifInfo(imagePath!!, outputUri)
 
                 return getRNFileUrl(outputUri)
             } catch (e: Exception) {
@@ -98,85 +113,94 @@ object ImageCompressor {
     }
 
     fun resize(image: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
-      val size = findActualSize(image, maxWidth, maxHeight)
-      val scaledImage = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
-      val scaleMatrix = Matrix()
-      val canvas = Canvas(scaledImage)
-      val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-      scaleMatrix.setScale(size.scale, size.scale, 0f, 0f)
-      paint.isDither = true
-      paint.isAntiAlias = true
-      paint.isFilterBitmap = true
-      canvas.drawBitmap(image, scaleMatrix, paint)
-      return scaledImage
+        val size = findActualSize(image, maxWidth, maxHeight)
+        val scaledImage = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
+        val scaleMatrix = Matrix()
+        val canvas = Canvas(scaledImage)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        scaleMatrix.setScale(size.scale, size.scale, 0f, 0f)
+        paint.isDither = true
+        paint.isAntiAlias = true
+        paint.isFilterBitmap = true
+        canvas.drawBitmap(image, scaleMatrix, paint)
+        return scaledImage
     }
 
-    fun compress(image: Bitmap?, output: ImageCompressorOptions.OutputType, quality: Float,disablePngTransparency:Boolean): ByteArrayOutputStream {
-      var stream = ByteArrayOutputStream()
-      if (output === ImageCompressorOptions.OutputType.jpg)
-      {
-        image!!.compress(CompressFormat.JPEG, Math.round(100 * quality), stream)
-      }
-      else
-      {
-        var bitmap = image
-        if(disablePngTransparency)
-        {
-          image!!.compress(CompressFormat.JPEG, Math.round(100 * quality), stream)
-          val byteArray: ByteArray = stream.toByteArray()
-          stream=ByteArrayOutputStream()
-          bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+    fun compress(
+        image: Bitmap?,
+        output: ImageCompressorOptions.OutputType,
+        quality: Float,
+        disablePngTransparency: Boolean
+    ): ByteArrayOutputStream {
+        var stream = ByteArrayOutputStream()
+        if (output === ImageCompressorOptions.OutputType.jpg) {
+            image!!.compress(CompressFormat.JPEG, Math.round(100 * quality), stream)
+        } else {
+            var bitmap = image
+            if (disablePngTransparency) {
+                image!!.compress(CompressFormat.JPEG, Math.round(100 * quality), stream)
+                val byteArray: ByteArray = stream.toByteArray()
+                stream = ByteArrayOutputStream()
+                bitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+            }
+            bitmap!!.compress(CompressFormat.PNG, 100, stream)
         }
-        bitmap!!.compress(CompressFormat.PNG, 100, stream)
-      }
-      return stream
+        return stream
     }
 
-    fun manualCompressImage(imagePath: String?, options: ImageCompressorOptions, reactContext: ReactApplicationContext?): String? {
-      val image = if (options.input === ImageCompressorOptions.InputType.base64) decodeImage(imagePath) else loadImage(imagePath)
-      val resizedImage = resize(image, options.maxWidth, options.maxHeight)
-      val isBase64 = options.returnableOutputType === ImageCompressorOptions.ReturnableOutputType.base64
-      val uri = Uri.parse(imagePath)
-      val imagePathNew = uri.path
-      var scaledBitmap: Bitmap? = correctImageOrientation(resizedImage, imagePathNew)
-      val imageDataByteArrayOutputStream = compress(scaledBitmap, options.output, options.quality, options.disablePngTransparency)
-      val compressedImagePath = encodeImage(imageDataByteArrayOutputStream, isBase64, options.output.toString(), imagePath, reactContext)
-      if (isCompressedSizeLessThanActualFile(imagePath!!, compressedImagePath)) {
-          return compressedImagePath
-      } else {
-          MediaCache.deleteFile(compressedImagePath!!)
-          return slashifyFilePath(imagePath)
-      }
+    fun manualCompressImage(
+        imagePath: String?,
+        options: ImageCompressorOptions,
+        reactContext: ReactApplicationContext?
+    ): String? {
+        var image = if (options.input === ImageCompressorOptions.InputType.base64)
+            decodeImage(imagePath)
+        else
+            loadImage(imagePath)
+
+        val resizedImage = resize(image, options.maxWidth, options.maxHeight)
+        val imageDataByteArrayOutputStream =
+            compress(resizedImage, options.output, options.quality, options.disablePngTransparency)
+        val isBase64 =
+            options.returnableOutputType === ImageCompressorOptions.ReturnableOutputType.base64
+        return encodeImage(
+            imageDataByteArrayOutputStream,
+            isBase64,
+            options.output.toString(),
+            imagePath,
+            reactContext
+        )
     }
 
-  fun isCompressedSizeLessThanActualFile(sourceFileUrl: String,compressedFileUrl: String?): Boolean {
-    try {
-      val sourceUri = Uri.parse(sourceFileUrl)
-      val sourcePath = sourceUri.path
-      val sourcefile = File(sourcePath)
-      val sizeInBytesForSourceFile = sourcefile.length().toFloat()
+    fun isCompressedSizeLessThanActualFile(sourceFileUrl: String, compressedFileUrl: String?): Boolean {
+        try {
+            val sourceUri = Uri.parse(sourceFileUrl)
+            val sourcePath = sourceUri.path
+            val sourceFile = File(sourcePath)
+            val sizeInBytesForSourceFile = sourceFile.length().toFloat()
 
-      val compressedUri = Uri.parse(compressedFileUrl)
-      val compressedPath = compressedUri.path
-      val compressedfile = File(compressedPath)
-      val sizeInBytesForcompressedFile = compressedfile.length().toFloat()
+            val compressedUri = Uri.parse(compressedFileUrl)
+            val compressedPath = compressedUri.path
+            val compressedFile = File(compressedPath)
+            val sizeInBytesForCompressedFile = compressedFile.length().toFloat()
 
-      if(sizeInBytesForcompressedFile<=sizeInBytesForSourceFile)
-      {
-        return true
-      }
-      return false
-    } catch (exception: OutOfMemoryError) {
-      exception.printStackTrace()
-      return true
+            return sizeInBytesForCompressedFile <= sizeInBytesForSourceFile
+        } catch (exception: OutOfMemoryError) {
+            exception.printStackTrace()
+            return true
+        }
     }
-  }
 
-    fun autoCompressImage(imagePath: String?, compressorOptions: ImageCompressorOptions, reactContext: ReactApplicationContext?): String? {
+    fun autoCompressImage(
+        imagePath: String?,
+        compressorOptions: ImageCompressorOptions,
+        reactContext: ReactApplicationContext?
+    ): String? {
         var imagePath = imagePath
         val autoCompressMaxHeight = compressorOptions.maxHeight.toFloat()
         val autoCompressMaxWidth = compressorOptions.maxWidth.toFloat()
-        val isBase64 = compressorOptions.returnableOutputType === ImageCompressorOptions.ReturnableOutputType.base64
+        val isBase64 =
+            compressorOptions.returnableOutputType === ImageCompressorOptions.ReturnableOutputType.base64
         val uri = Uri.parse(imagePath)
         imagePath = uri.path
         var scaledBitmap: Bitmap? = null
@@ -226,18 +250,25 @@ object ImageCompressor {
         val canvas = Canvas(scaledBitmap!!)
         canvas.setMatrix(scaleMatrix)
         canvas.drawBitmap(bmp!!, middleX - bmp.width / 2, middleY - bmp.height / 2, Paint(Paint.FILTER_BITMAP_FLAG))
-        if (bmp != null) {
-            bmp.recycle()
-        }
+        bmp.recycle()
+
+        // ✅ Fix orientation before compression
         scaledBitmap = correctImageOrientation(scaledBitmap, imagePath)
-        val imageDataByteArrayOutputStream = compress(scaledBitmap, compressorOptions.output, compressorOptions.quality,compressorOptions.disablePngTransparency)
-        val compressedImagePath=encodeImage(imageDataByteArrayOutputStream, isBase64, compressorOptions.output.toString(),imagePath, reactContext)
-        if(isCompressedSizeLessThanActualFile(imagePath!!,compressedImagePath))
-        {
-        return  compressedImagePath
+
+        val imageDataByteArrayOutputStream =
+            compress(scaledBitmap, compressorOptions.output, compressorOptions.quality, compressorOptions.disablePngTransparency)
+        val compressedImagePath = encodeImage(
+            imageDataByteArrayOutputStream,
+            isBase64,
+            compressorOptions.output.toString(),
+            imagePath,
+            reactContext
+        )
+        if (isCompressedSizeLessThanActualFile(imagePath!!, compressedImagePath)) {
+            return compressedImagePath
         }
-       MediaCache.deleteFile(compressedImagePath!!)
-       return slashifyFilePath(imagePath)
+        MediaCache.deleteFile(compressedImagePath!!)
+        return slashifyFilePath(imagePath)
     }
 
     fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
@@ -262,34 +293,26 @@ object ImageCompressor {
 
         return try {
             val exif = ExifInterface(imagePath)
-            val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            val orientation =
+                exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            Log.d("ImageCompressor", "Orientation tag: $orientation for $imagePath")
             val matrix = Matrix()
 
             when (orientation) {
                 ExifInterface.ORIENTATION_NORMAL -> return bitmap
-                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> {
-                    matrix.setScale(-1f, 1f)
-                }
-                ExifInterface.ORIENTATION_ROTATE_180 -> {
-                    matrix.setRotate(180f)
-                }
-                ExifInterface.ORIENTATION_FLIP_VERTICAL -> {
-                    matrix.setScale(1f, -1f)
-                }
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
+                ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
                 ExifInterface.ORIENTATION_TRANSPOSE -> {
                     matrix.setRotate(90f)
                     matrix.postScale(-1f, 1f)
                 }
-                ExifInterface.ORIENTATION_ROTATE_90 -> {
-                    matrix.setRotate(90f)
-                }
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
                 ExifInterface.ORIENTATION_TRANSVERSE -> {
                     matrix.setRotate(-90f)
                     matrix.postScale(-1f, 1f)
                 }
-                ExifInterface.ORIENTATION_ROTATE_270 -> {
-                    matrix.setRotate(-90f)
-                }
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(-90f)
                 else -> return bitmap
             }
 
